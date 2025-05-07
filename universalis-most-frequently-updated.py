@@ -13,14 +13,18 @@ WORLDS = [
     "Balmung", "Brynhildr", "Coeurl", "Diabolos", "Goblin", "Malboro", "Mateus", "Zalera"
 ]
 
-PRIORITY_WORLDS = [
-    "Brynhildr", "Balmung", "Coeurl", "Diabolos", "Goblin", "Malboro", "Mateus", "Zalera"
-]
+# Data Center groupings
+DATA_CENTERS = {
+    "Aether": ["Adamantoise", "Cactuar", "Faerie", "Gilgamesh", "Jenova", "Midgardsormr", "Sargatanas", "Siren"],
+    "Primal": ["Behemoth", "Excalibur", "Exodus", "Famfrit", "Hyperion", "Lamia", "Leviathan", "Ultros"],
+    "Crystal": ["Balmung", "Brynhildr", "Coeurl", "Diabolos", "Goblin", "Malboro", "Mateus", "Zalera"]
+}
 
 DELAY_BETWEEN_REQUESTS = 1/15
 MAX_OUTPUT_LINES = 1000
 ENTRIES_PER_WORLD = 200
 OUTPUT_CSV = "frequently_updated_items.csv"
+RAW_DATA_FILE = "universalis.txt"
 
 def load_item_database():
     """Load the local item database JSON file"""
@@ -38,7 +42,15 @@ def fetch_world_data(world):
         url = f"https://universalis.app/api/v2/extra/stats/most-recently-updated?dcName={world}&entries={ENTRIES_PER_WORLD}"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        
+        # Save raw data to file
+        with open(RAW_DATA_FILE, "a", encoding="utf-8") as f:
+            f.write(f"=== {world} ===\n")
+            json.dump(data, f, indent=2)
+            f.write("\n\n")
+            
+        return data
     except requests.RequestException as e:
         print(f"Warning: Failed to fetch data for {world}. Error: {e}")
         return None
@@ -53,7 +65,13 @@ def process_world_data(world_data, items_db, results):
         if item_id in items_db:
             item_name = items_db[item_id].get("en", f"Unknown (ID: {item_id})")
             results[item_name]["count"] += 1
-            results[item_name]["worlds"].add(world_data["world"])
+            
+            # Add to the appropriate Data Center count
+            for dc, worlds in DATA_CENTERS.items():
+                if world_data["world"] in worlds:
+                    results[item_name]["data_centers"][dc] += 1
+                    break
+            
             # Keep the most recent timestamp
             if item["lastUploadTime"] > results[item_name]["last_updated"]:
                 results[item_name]["last_updated"] = item["lastUploadTime"]
@@ -65,13 +83,16 @@ def format_timestamp(timestamp_ms):
     dt = datetime.fromtimestamp(timestamp_ms / 1000)
     return dt.strftime("%Y-%m-%d %I:%M %p")
 
-def format_worlds_list(worlds_set, priority_worlds):
-    """Format worlds list with priority worlds first"""
-    priority = [w for w in priority_worlds if w in worlds_set]
-    non_priority = [w for w in worlds_set if w not in priority_worlds]
-    return ", ".join(priority + non_priority)
+def format_data_centers(data_centers):
+    """Format data centers counts as 'Crystal: 7, Aether: 4, Primal: 3'"""
+    # Sort by count descending, then by DC name
+    sorted_dcs = sorted(
+        data_centers.items(),
+        key=lambda x: (-x[1], x[0])
+    )
+    return ", ".join(f"{dc}: {count}" for dc, count in sorted_dcs if count > 0)
 
-def generate_output(all_items, max_lines, priority_worlds):
+def generate_output(all_items, max_lines):
     """Generate both console and CSV output"""
     sorted_items = sorted(
         all_items.items(),
@@ -84,7 +105,7 @@ def generate_output(all_items, max_lines, priority_worlds):
             "Item Name": item_name,
             "Count": data["count"],
             "Last Updated": format_timestamp(data["last_updated"]),
-            "Worlds": format_worlds_list(data["worlds"], priority_worlds)
+            "Data Centers": format_data_centers(data["data_centers"])
         })
     return output_data
 
@@ -92,25 +113,28 @@ def write_csv(output_data, filename):
     """Write data to CSV file with custom header"""
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, 
-                              fieldnames=["Item Name", "Count", "Last Updated", "Worlds"])
+                              fieldnames=["Item Name", "Count", "Last Updated", "Data Centers"])
         writer.writeheader()
         writer.writerows(output_data)
 
 def print_console_output(output_data):
     """Print formatted output to console"""
     print("\nTop 1000 frequently updated items across all worlds:")
-    print("Item Name, Count, Last Updated, Worlds")
+    print("Item Name, Count, Last Updated, Data Centers")
     for item in output_data:
-        print(f"{item['Item Name']}, {item['Count']}, {item['Last Updated']}, {item['Worlds']}")
+        print(f"{item['Item Name']}, {item['Count']}, {item['Last Updated']}, \"{item['Data Centers']}\"")
 
 def main():
+    # Clear the output file at start
+    open(RAW_DATA_FILE, "w").close()
+    
     print("Starting data collection...")
     items_db = load_item_database()
     print(f"Successfully loaded items database with {len(items_db)} entries.")
 
     all_items = defaultdict(lambda: {
         "count": 0,
-        "worlds": set(),
+        "data_centers": defaultdict(int),
         "last_updated": 0
     })
 
@@ -125,10 +149,11 @@ def main():
             process_world_data(world_data, items_db, all_items)
 
     print("\nData collection complete. Preparing results...")
-    output_data = generate_output(all_items, MAX_OUTPUT_LINES, PRIORITY_WORLDS)
+    output_data = generate_output(all_items, MAX_OUTPUT_LINES)
     
     write_csv(output_data, OUTPUT_CSV)
     print(f"Results saved to {OUTPUT_CSV}")
+    print(f"Raw API responses saved to {RAW_DATA_FILE}")
     
     print_console_output(output_data)
 
